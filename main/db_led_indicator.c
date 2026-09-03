@@ -1,48 +1,31 @@
 /*
  *   This file is part of DroneBridge: https://github.com/DroneBridge/ESP32
- *
- *   Copyright 2026 Wolfgang Christl
- *
- *   Licensed under the Apache License, Version 2.0 (the "License");
- *   you may not use this file except in compliance with the License.
- *   You may obtain a copy of the License at
- *
- *   http://www.apache.org/licenses/LICENSE-2.0
- *
- *   Unless required by applicable law or agreed to in writing, software
- *   distributed under the License is distributed on an "AS IS" BASIS,
- *   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- *   See the License for the specific language governing permissions and
- *   limitations under the License.
- *
+ *   Modified for WS2812 RGB LED on ESP32-C6 Super Mini
  */
 
 #include <driver/gpio.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_log.h"
+#include "led_strip.h" // RGB LED Kütüphanesi Eklendi
 
 #include "db_parameters.h"
 #include "db_led_indicator.h"
 
 static const char *TAG = "DB_LED_IND";
 
-// Turn LED off if no qualifying activity was seen within this window.
 #define DB_STATUS_LED_TIMEOUT_MS 1000
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
-#define DB_STATUS_LED_GPIO GPIO_NUM_15
-#define DB_STATUS_LED_ACTIVE_LOW 1
-#endif
+#define RGB_LED_GPIO 8 // ESP32-C6 Super Mini üzerindeki LED pini
 
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
 static TickType_t db_status_led_last_serial_mavlink_tick = 0;
 static TickType_t db_status_led_last_radio_tick = 0;
 static bool db_status_led_initialized = false;
 static db_status_led_binding_state_t db_status_led_binding_state = DB_STATUS_LED_BINDING_NONE;
 
-/**
- * Checks whether an activity timestamp is still inside the LED "on" timeout window.
- */
+// LED Objesi ve Mevcut Renk Hafızası (Gereksiz güncellemeleri önlemek için)
+static led_strip_handle_t led_strip;
+static uint8_t current_r = 0, current_g = 0, current_b = 0;
+
 static bool db_status_led_is_activity_recent(TickType_t now_tick, TickType_t last_tick) {
     if (last_tick == 0) {
         return false;
@@ -50,127 +33,94 @@ static bool db_status_led_is_activity_recent(TickType_t now_tick, TickType_t las
     return (now_tick - last_tick) < pdMS_TO_TICKS(DB_STATUS_LED_TIMEOUT_MS);
 }
 
-/**
- * Maps logical LED state (on/off) to the required GPIO level.
- * Supports active-high and active-low wiring.
- */
-static int db_status_led_gpio_level_from_on_state(bool should_be_on) {
-    if (DB_STATUS_LED_ACTIVE_LOW) {
-        return should_be_on ? 0 : 1;
-    }
-    return should_be_on ? 1 : 0;
-}
-
-/**
- * Maps raw GPIO level back to logical LED state (on/off).
- */
-static bool db_status_led_on_state_from_gpio_level(int gpio_level) {
-    if (DB_STATUS_LED_ACTIVE_LOW) {
-        return gpio_level == 0;
-    }
-    return gpio_level > 0;
-}
-#endif
-
-/**
- * Initializes status LED handling for C6 official boards.
- * LED starts in OFF state.
- */
 void db_status_led_init() {
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
-    gpio_reset_pin(DB_STATUS_LED_GPIO);
-    // Keep input enabled so gpio_get_level() can be used to check current pin state.
-    gpio_set_direction(DB_STATUS_LED_GPIO, GPIO_MODE_INPUT_OUTPUT);
-    gpio_set_level(DB_STATUS_LED_GPIO, db_status_led_gpio_level_from_on_state(false));
+    // Eski GPIO kurulumu yerine RGB LED kurulumu
+    led_strip_config_t strip_config = {
+        .strip_gpio_num = RGB_LED_GPIO,
+        .max_leds = 1,
+    };
+    led_strip_rmt_config_t rmt_config = {
+        .resolution_hz = 10 * 1000 * 1000, // 10MHz RMT
+    };
+    
+    ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &led_strip));
+    led_strip_clear(led_strip);
+    
     db_status_led_initialized = true;
     db_status_led_last_serial_mavlink_tick = 0;
     db_status_led_last_radio_tick = 0;
-#endif
 }
 
-/**
- * Marks "serial MAVLink received" activity for LED state logic.
- * Used in AP, STA and ESP-NOW AIR modes.
- */
 void db_status_led_mark_serial_mavlink_rx() {
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
     db_status_led_last_serial_mavlink_tick = xTaskGetTickCount();
-#endif
 }
 
-/**
- * Marks "wireless packet received" activity for LED state logic.
- * Used in AP-LR and ESP-NOW GND modes.
- */
 void db_status_led_mark_radio_rx() {
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
     db_status_led_last_radio_tick = xTaskGetTickCount();
-#endif
 }
 
-/**
- * Selects the temporary LED pattern used by the ESP-NOW binding runtime.
- *
- * @param state Binding state to display; DB_STATUS_LED_BINDING_NONE restores traffic indication.
- */
 void db_status_led_set_binding_state(db_status_led_binding_state_t state) {
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
     db_status_led_binding_state = state;
-#else
-    (void) state;
-#endif
 }
 
-/**
- * Evaluates current mode + recent activity timestamps and updates LED GPIO if needed.
- * Intended to be called periodically (timer-driven).
- */
 void db_status_led_process() {
-#ifdef CONFIG_DB_OFFICIAL_BOARD_1_X_C6
     if (!db_status_led_initialized) {
         return;
     }
 
     TickType_t now_tick = xTaskGetTickCount();
-    bool should_led_be_on = false;
+    uint8_t target_r = 0, target_g = 0, target_b = 0;
 
     if (db_status_led_binding_state != DB_STATUS_LED_BINDING_NONE) {
         const uint32_t elapsed_ms = now_tick * portTICK_PERIOD_MS;
+        bool flash = false;
+        
         switch (db_status_led_binding_state) {
             case DB_STATUS_LED_BINDING_SEARCHING:
-                should_led_be_on = (elapsed_ms % 1000U) < 250U;
+                flash = (elapsed_ms % 1000U) < 250U;
+                if(flash) { target_b = 255; } // Mavi yanıp sönme
                 break;
             case DB_STATUS_LED_BINDING_NEGOTIATING:
-                should_led_be_on = (elapsed_ms % 250U) < 125U;
+                flash = (elapsed_ms % 250U) < 125U;
+                if(flash) { target_r = 200; target_g = 200; } // Sarı hızlı yanıp sönme
                 break;
             case DB_STATUS_LED_BINDING_SUCCESS:
-                should_led_be_on = true;
+                target_g = 255; // Sabit Yeşil
                 break;
             case DB_STATUS_LED_BINDING_FAILURE:
-                should_led_be_on = (elapsed_ms % 1000U) < 150U ||
-                                   ((elapsed_ms % 1000U) >= 300U && (elapsed_ms % 1000U) < 450U) ||
-                                   ((elapsed_ms % 1000U) >= 600U && (elapsed_ms % 1000U) < 750U);
+                flash = (elapsed_ms % 1000U) < 150U ||
+                        ((elapsed_ms % 1000U) >= 300U && (elapsed_ms % 1000U) < 450U) ||
+                        ((elapsed_ms % 1000U) >= 600U && (elapsed_ms % 1000U) < 750U);
+                if(flash) { target_r = 255; } // Kırmızı SOS
                 break;
             default:
                 break;
         }
-    } else if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP ||
-        DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_AIR ||
-        DB_PARAM_RADIO_MODE == DB_WIFI_MODE_STA) {
-        // AP, ESP-NOW AIR, STA: indicate MAVLink activity on serial
-        should_led_be_on = db_status_led_is_activity_recent(now_tick, db_status_led_last_serial_mavlink_tick);
-    } else if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_GND ||
-               DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
-        // ESP-NOW GND, AP-LR: indicate packet activity received via wireless link
-        should_led_be_on = db_status_led_is_activity_recent(now_tick, db_status_led_last_radio_tick);
+    } else {
+        bool active = false;
+        if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP || 
+            DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_AIR || 
+            DB_PARAM_RADIO_MODE == DB_WIFI_MODE_STA) {
+            active = db_status_led_is_activity_recent(now_tick, db_status_led_last_serial_mavlink_tick);
+        } else if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_GND || 
+                   DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
+            active = db_status_led_is_activity_recent(now_tick, db_status_led_last_radio_tick);
+        }
+
+        if (active) {
+            target_g = 255; // Veri akarken Yeşil
+        } else {
+            target_b = 20;  // Veri yokken/Beklerken Düşük parlaklıkta Mavi (Cihazın çalıştığını gösterir)
+        }
     }
 
-    bool is_led_on = db_status_led_on_state_from_gpio_level(gpio_get_level(DB_STATUS_LED_GPIO));
-    if (should_led_be_on != is_led_on) {
-        int gpio_level_to_set = db_status_led_gpio_level_from_on_state(should_led_be_on);
-        ESP_LOGI(TAG, "Status LED should: %s - GPIO reported: %s - setting GPIO to: %d",
-                 should_led_be_on ? "ON" : "OFF", is_led_on ? "ON" : "OFF", gpio_level_to_set);
-        gpio_set_level(DB_STATUS_LED_GPIO, gpio_level_to_set);
+    // Renk değiştiyse LED'e yeni komut gönder
+    if (target_r != current_r || target_g != current_g || target_b != current_b) {
+        current_r = target_r;
+        current_g = target_g;
+        current_b = target_b;
+        
+        led_strip_set_pixel(led_strip, 0, current_r, current_g, current_b);
+        led_strip_refresh(led_strip);
     }
-#endif
 }
