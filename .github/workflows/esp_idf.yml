@@ -6,7 +6,9 @@ on:
       - v2.0dev
   pull_request:
     branches: [ master ]
-workflow_dispatch:
+
+
+
 jobs:
   build_idf_v5_4_4_generic:
     runs-on: ubuntu-latest
