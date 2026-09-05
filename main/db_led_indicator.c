@@ -98,19 +98,24 @@ void db_status_led_process() {
         }
     } else {
         bool active = false;
-        if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP || 
-            DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_AIR || 
-            DB_PARAM_RADIO_MODE == DB_WIFI_MODE_STA) {
-            active = db_status_led_is_activity_recent(now_tick, db_status_led_last_serial_mavlink_tick);
-        } else if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_GND || 
-                   DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
+        
+        // ESP-NOW AIR veya AP-LR modundaysak, SADECE telsizden (radio) paket geldiyse yeşil yap.
+        // Uçuş kartından seri portla gelen MAVLink verisi burada yeşil yakmasın!
+        if (DB_PARAM_RADIO_MODE == DB_WIFI_MODE_ESPNOW_AIR || 
+            DB_PARAM_RADIO_MODE == DB_WIFI_MODE_AP_LR) {
             active = db_status_led_is_activity_recent(now_tick, db_status_led_last_radio_tick);
+        } 
+        // Diğer modlardaysa seri porta bakabilir
+        else {
+            active = db_status_led_is_activity_recent(now_tick, db_status_led_last_serial_mavlink_tick);
         }
 
         if (active) {
-            target_g = 255; // Veri akarken Yeşil
+            target_g = 255; // Karşı taraftan telsiz paketi akarken Yeşil kırmızı mavi
+            target_r = 255
+            target_b = 255
         } else {
-            target_b = 20;  // Veri yokken/Beklerken Düşük parlaklıkta Mavi (Cihazın çalıştığını gösterir)
+            target_r = 255;  // Karşı taraf kapalıysa/beklemedeyse kırmızı
         }
     }
 
