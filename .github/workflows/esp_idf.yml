@@ -27,12 +27,13 @@ jobs:
       with:
         target: "${{ matrix.target }}"
         command: "idf.py set-target ${{matrix.target}} build"
-
-        - name: Bin dosyalarini indirilebilir yap
+    - name: Bin dosyalarini indirilebilir yap
       uses: actions/upload-artifact@v4
       with:
         name: DroneBridge_ESP32_C6_Direkt
-        path: DroneBridge_ESP32_C6_Direkt
+        path: DroneBridge_ESP32_C6_Direkt1
+          
+  
   build_idf_v5_4_4_nightly_release:
     runs-on: ubuntu-latest
     steps:
