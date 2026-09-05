@@ -31,7 +31,11 @@ jobs:
       uses: actions/upload-artifact@v4
       with:
         name: DroneBridge_ESP32_C6_Direkt
-        path: DroneBridge_ESP32_C6_Direkt1
+        path: |
+          build/bootloader/bootloader.bin
+          build/partition_table/partition-table.bin
+          build/db_esp32.bin
+          build/www.bin
           
   
   build_idf_v5_4_4_nightly_release:
