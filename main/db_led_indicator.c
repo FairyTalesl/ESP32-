@@ -112,8 +112,8 @@ void db_status_led_process() {
 
         if (active) {
             target_g = 255; // Karşı taraftan telsiz paketi akarken Yeşil kırmızı mavi
-            target_r = 255
-            target_b = 255
+            target_r = 255;
+            target_b = 255;
         } else {
             target_r = 255;  // Karşı taraf kapalıysa/beklemedeyse kırmızı
         }
